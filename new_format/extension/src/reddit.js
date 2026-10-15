@@ -471,7 +471,27 @@
     });
   }
 
+
+  function disableInboxReplies(form) {
+    const checkbox = form.querySelector(
+      'input[type="checkbox"][name="sendreplies"]'
+    );
+
+    if (!checkbox) return false;
+
+    if (checkbox.checked) checkbox.click();
+
+    return !checkbox.checked;
+  }
+
+
   function fillAndSubmit(f, job) {
+    if (!disableInboxReplies(f.form)) {
+    return stop(
+      'reply-setting',
+      'Could not disable inbox replies'
+    );
+  }
     fill(f.title, job.title);
     fill(f.text, job.body);
     if (f.title.value !== job.title || f.text.value !== job.body) {
@@ -510,7 +530,17 @@
         console.info('[PMT] not the old reddit submit form - flair left alone');
         return;
       }
+      
+      waitFor(function () {
+        return document.querySelector(
+          '#newlink input[type="checkbox"][name="sendreplies"]'
+        );
+      }, 10000).then(function (checkbox) {
+        if (checkbox && checkbox.checked) checkbox.click();
+      });
+
       pickFlair();
+
     });
   }
 
