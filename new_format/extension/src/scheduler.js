@@ -470,6 +470,7 @@ function readMatchState() {
 
   return {
     url: location.href,
+    loadedAt: performance.timeOrigin,
     title: document.title,
     isMatchPage: !!box,
     challenged: !box && /just a moment|verify you are human|checking your browser/i.test(head),
@@ -493,19 +494,41 @@ function readMatchState() {
 // the teams box yet - or not have happened at all, leaving the previous page
 // on screen (`stale`: the address lacks this check's token). In every case,
 // look again before judging.
-function readMatchStateSettled(tabId, token, left) {
+
+function readMatchStateSettled(tabId, token, matchId, startedAt, left) {
   if (left == null) left = 10;
+
   return runInTab(tabId, readMatchState).then(function (s) {
-    s.stale = String(s.url || '').indexOf('pmt-check=' + token) < 0;
+    var hasToken =
+      String(s.url || '').indexOf('pmt-check=' + token) >= 0;
+
+    var freshMatchPage =
+      s.isMatchPage &&
+      matchIdOf(s.url) === matchId &&
+      s.loadedAt >= startedAt - 1000;
+
+    s.stale = !hasToken && !freshMatchPage;
+
     if ((s.stale || !s.isMatchPage) && left > 1) {
-      return wait(1500).then(function () { return readMatchStateSettled(tabId, token, left - 1); });
+      return wait(1500).then(function () {
+        return readMatchStateSettled(
+          tabId, token, matchId, startedAt, left - 1
+        );
+      });
     }
+
     return s;
   }, function (e) {
     if (isMissingTabError(e) || left <= 1) throw e;
-    return wait(1500).then(function () { return readMatchStateSettled(tabId, token, left - 1); });
+
+    return wait(1500).then(function () {
+      return readMatchStateSettled(
+        tabId, token, matchId, startedAt, left - 1
+      );
+    });
   });
 }
+
 
 function phaseOf(s) {
   if (s.challenged) return 'challenged';
@@ -516,10 +539,11 @@ function phaseOf(s) {
 
 function checkJob(job) {
   var id = job.id;
+  var startedAt = Date.now();
   checking[id] = true;
   return scheduleSettings().then(function (settings) {
     return watchTab(job).then(function (w) {
-      return readMatchStateSettled(w.tabId, w.token).then(function (s) { return judge(id, w.tabId, s, settings); });
+      return readMatchStateSettled(w.tabId, w.token, job.matchId, startedAt).then(function (s) {return judge(id, w.tabId, s, settings);});
     });
   }).catch(function (e) {
     return updateJob(id, function (j) {
@@ -561,6 +585,16 @@ function judge(id, tabId, s, settings) {
       return;
     }
     j.staleChecks = 0;
+
+    // Remember HLTV's new URL after a match gets renamed.
+    var currentUrl = String(s.url || '').split(/[?#]/)[0];
+
+    if (s.isMatchPage &&
+        matchIdOf(currentUrl) === j.matchId &&
+        j.matchUrl !== currentUrl) {
+      j.matchUrl = currentUrl;
+      jobNote(j, 'match URL updated', { url: currentUrl });
+    }
 
     var phase = phaseOf(s);
     var before = j.lastSeen && j.lastSeen.phase;
