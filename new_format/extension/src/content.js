@@ -1053,7 +1053,7 @@ function holdAwake(name) {
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg) return false;
   if (msg.type === 'generate') generate();
-  if (msg.type === 'scheduledGenerate') {
+  if (msg.type === 'scheduledGenerate' || msg.type === 'scheduledRegenerate') {
     // answered straight away - the build takes a while, and its result comes
     // back as a message of its own, which keeps the worker awake for it
     if (busy) {
@@ -1062,13 +1062,15 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     }
     sendResponse({ accepted: true });
     var awake = holdAwake('pmt-build-' + msg.jobId);
+    var isUpdate = msg.type === 'scheduledRegenerate';
     generate({
       kind: 'post',
       noOpen: true,
       scheduled: msg.jobId,
       onDone: function (res) {
         awake.release();
-        chrome.runtime.sendMessage(Object.assign({ type: 'scheduledThread', jobId: msg.jobId }, res),
+        chrome.runtime.sendMessage(Object.assign({ type: isUpdate ? 'scheduledRegenerated' : 'scheduledThread',
+                                                   jobId: msg.jobId }, res),
           function () { void chrome.runtime.lastError; });
       }
     });

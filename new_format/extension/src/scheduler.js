@@ -53,6 +53,10 @@ var ACTIVE_STATES = ['watching', 'generating', 'submitting'];
 var FINISHED_STATES = ['posted', 'failed', 'cancelled'];
 
 var STATS_GRACE_MS = 5 * 60000;       // after "Match over", how long to wait for the stats tables
+var MAP3_UPDATE_WINDOW_MS = 60 * 60000; // after posting, allow one hour for missing stats
+var MAP3_CHECK_MS = 60000;
+var MAP3_EDIT_TIMEOUT_MS = 3 * 60000;
+var MAP3_MAX_EDIT_ATTEMPTS = 3;
 var BUILD_TIMEOUT_MS = 5 * 60000;     // no word from the match page by then: build again
 var SUBMIT_TIMEOUT_MS = 10 * 60000;   // no thread by then: hand it to a person
 var UNSEEN_SUBMIT_MS = 2 * 60000;     // the submit page has not even asked for its thread by then
@@ -169,7 +173,10 @@ function latestJobFor(jobs, matchId) {
 // alarm calls go out in the same order as the writes that caused them.
 function syncAlarmAndBadge(jobs) {
   var list = jobList(jobs);
-  var active = list.filter(function (j) { return ACTIVE_STATES.indexOf(j.state) >= 0; }).length;
+  var active = list.filter(function (j) {
+    return ACTIVE_STATES.indexOf(j.state) >= 0 ||
+      (j.state === 'posted' && ['waiting', 'building', 'editing'].indexOf(j.map3EditStatus) >= 0);
+  }).length;
   var stuck = list.filter(function (j) { return j.state === 'attention'; }).length;
   if (active && alarmOn !== true) {
     chrome.alarms.create(SCHEDULE_ALARM, { periodInMinutes: 0.5 });
@@ -457,19 +464,36 @@ function readMatchState() {
     '.team1-gradient .won, .team2-gradient .won, .team1-gradient .tie, .team2-gradient .tie'));
 
   var missing = [];
-  Array.prototype.forEach.call(document.querySelectorAll('.mapholder'), function (h) {
-    var over = h.querySelector('.results-left.won, .results-left.lost, .results-right.won, .results-right.lost');
-    var a = h.querySelector('.results-center-stats a');
-    var id = ((a && a.getAttribute('href')) || '').match(/\/mapstatsid\/(\d+)\//);
-    if (!over || !id) return;
-    var tab = document.getElementById(id[1] + '-content');
-    if (!tab || !tab.querySelector('table.totalstats')) missing.push(txt(h.querySelector('.mapname')));
-  });
+  
+Array.prototype.forEach.call(document.querySelectorAll('.mapholder'), function (h) {
+  var over = h.querySelector('.results-left.won, .results-left.lost, .results-right.won, .results-right.lost');
+  var a = h.querySelector('.results-center-stats a');
+  var id = ((a && a.getAttribute('href')) || '').match(/\/mapstatsid\/(\d+)\//);
+
+  if (!over) return;
+
+  var mapName = txt(h.querySelector('.mapname'));
+
+  // Map is finished, but the stats link is missing
+  if (!id) {
+    missing.push(mapName + ' (stats link missing)');
+    return;
+  }
+
+  // Stats link exists, but the stats table is missing
+  var tab = document.getElementById(id[1] + '-content');
+  if (!tab || !tab.querySelector('table.totalstats')) {
+    missing.push(mapName + ' (stats table missing)');
+  }
+});
+
   var allTables = document.querySelectorAll('#all-content table.totalstats').length;
+
   var head = (document.title || '') + ' ' + (document.body ? document.body.textContent.slice(0, 2000) : '');
 
   return {
     url: location.href,
+    loadedAt: performance.timeOrigin,
     title: document.title,
     isMatchPage: !!box,
     challenged: !box && /just a moment|verify you are human|checking your browser/i.test(head),
@@ -493,19 +517,41 @@ function readMatchState() {
 // the teams box yet - or not have happened at all, leaving the previous page
 // on screen (`stale`: the address lacks this check's token). In every case,
 // look again before judging.
-function readMatchStateSettled(tabId, token, left) {
+
+function readMatchStateSettled(tabId, token, matchId, startedAt, left) {
   if (left == null) left = 10;
+
   return runInTab(tabId, readMatchState).then(function (s) {
-    s.stale = String(s.url || '').indexOf('pmt-check=' + token) < 0;
+    var hasToken =
+      String(s.url || '').indexOf('pmt-check=' + token) >= 0;
+
+    var freshMatchPage =
+      s.isMatchPage &&
+      matchIdOf(s.url) === matchId &&
+      s.loadedAt >= startedAt - 1000;
+
+    s.stale = !hasToken && !freshMatchPage;
+
     if ((s.stale || !s.isMatchPage) && left > 1) {
-      return wait(1500).then(function () { return readMatchStateSettled(tabId, token, left - 1); });
+      return wait(1500).then(function () {
+        return readMatchStateSettled(
+          tabId, token, matchId, startedAt, left - 1
+        );
+      });
     }
+
     return s;
   }, function (e) {
     if (isMissingTabError(e) || left <= 1) throw e;
-    return wait(1500).then(function () { return readMatchStateSettled(tabId, token, left - 1); });
+
+    return wait(1500).then(function () {
+      return readMatchStateSettled(
+        tabId, token, matchId, startedAt, left - 1
+      );
+    });
   });
 }
+
 
 function phaseOf(s) {
   if (s.challenged) return 'challenged';
@@ -516,10 +562,11 @@ function phaseOf(s) {
 
 function checkJob(job) {
   var id = job.id;
+  var startedAt = Date.now();
   checking[id] = true;
   return scheduleSettings().then(function (settings) {
     return watchTab(job).then(function (w) {
-      return readMatchStateSettled(w.tabId, w.token).then(function (s) { return judge(id, w.tabId, s, settings); });
+      return readMatchStateSettled(w.tabId, w.token, job.matchId, startedAt).then(function (s) {return judge(id, w.tabId, s, settings);});
     });
   }).catch(function (e) {
     return updateJob(id, function (j) {
@@ -561,6 +608,16 @@ function judge(id, tabId, s, settings) {
       return;
     }
     j.staleChecks = 0;
+
+    // Remember HLTV's new URL after a match gets renamed.
+    var currentUrl = String(s.url || '').split(/[?#]/)[0];
+
+    if (s.isMatchPage &&
+        matchIdOf(currentUrl) === j.matchId &&
+        j.matchUrl !== currentUrl) {
+      j.matchUrl = currentUrl;
+      jobNote(j, 'match URL updated', { url: currentUrl });
+    }
 
     var phase = phaseOf(s);
     var before = j.lastSeen && j.lastSeen.phase;
@@ -613,6 +670,14 @@ function judge(id, tabId, s, settings) {
         return;
       }
       if (!s.statsReady) jobNote(j, 'stats tables still missing - building anyway', { missing: s.mapsMissingStats });
+      // Arm a post-publication edit for ANY missing statistics.
+      // readMatchState checks ALL finished maps, including maps without a stats link.
+      // Retain the existing map3* job keys for compatibility with saved jobs.
+      if (!s.statsReady) {
+        j.map3EditStatus = 'armed';
+        jobNote(j, 'Statistics missing; will update the posted thread when available',
+                { missing: s.mapsMissingStats });
+      }
       j.state = 'generating';
       j.buildStartedAt = now;
       j.buildAttempts = (j.buildAttempts || 0) + 1;
@@ -852,18 +917,26 @@ function submitLanded(msg, sender) {
     hit.threadUrl = msg.url;
     hit.error = undefined;
     jobNote(hit, 'posted', { url: msg.url });
+    if (hit.map3EditStatus === 'armed') {
+      hit.map3EditStatus = 'waiting';
+      hit.map3EditDeadline = Date.now() + MAP3_UPDATE_WINDOW_MS;
+      hit.map3EditNextAt = Date.now() + MAP3_CHECK_MS;
+      jobNote(hit, 'watching for missing stats to update the existing Reddit post');
+    }
     return JSON.parse(JSON.stringify(hit));
   }).then(function (j) {
     if (!j) return;
     announce(j);
     // done: the thread tab goes back out of sight, the watch tab goes away
-    return Promise.all([closeWatchTab(j), regroupTab(j.submitTabId)]);
+    return Promise.all([j.map3EditStatus === 'waiting' ? regroupTab(j.watchTabId) : closeWatchTab(j),
+                        regroupTab(j.submitTabId)]);
   });
 }
 
 chrome.tabs.onRemoved.addListener(function (tabId) {
   readJobs().then(function (jobs) {
-    var touched = jobList(jobs).some(function (j) { return j.watchTabId === tabId || j.submitTabId === tabId; });
+    var touched = jobList(jobs).some(function (j) { return j.watchTabId === tabId ||
+      j.submitTabId === tabId || j.map3EditTabId === tabId; });
     if (!touched) return;
     var said = [];
     return withJobs(function (all) {
@@ -875,6 +948,13 @@ chrome.tabs.onRemoved.addListener(function (tabId) {
             j.state = 'watching';
             j.nextCheckAt = Date.now();
             jobNote(j, 'the watching tab was closed mid-build');
+          }
+        }
+        if (j.map3EditTabId === tabId) {
+          j.map3EditTabId = null;
+          if (j.state === 'posted' && j.map3EditStatus === 'editing' && !j.map3EditNextAt) {
+            j.map3EditNextAt = Date.now() + MAP3_CHECK_MS;
+            jobNote(j, 'Reddit edit tab closed; will retry');
           }
         }
         if (j.submitTabId === tabId) {
@@ -905,6 +985,242 @@ function submitPageSilent(job) {
     });
   }).then(function (j) {
     if (j && j.state === 'attention') announce(j);
+  });
+}
+
+/* ------------------------------------- post-publication statistics update */
+// The primary job remains "posted" throughout, so no code can submit twice.
+// An edit is allowed only on its original Reddit post and only if the current
+// body still equals the one PMT originally posted. See reddit.js.
+function closeMap3EditTab(job) {
+  return getTab(job && job.map3EditTabId).then(function (t) {
+    if (t && /^https:\/\/(old\.|www\.)reddit\.com\/r\/[^/]+\/comments\//.test(t.url || '')) {
+      tabEdit(function (cb) { chrome.tabs.remove(t.id, cb); }, function () {});
+    }
+  });
+}
+function map3Stop(id, why) {
+  return updateJob(id, function (j) {
+    if (j.state !== 'posted' || ['waiting', 'building', 'editing'].indexOf(j.map3EditStatus) < 0) return;
+    j.map3EditStatus = 'stopped';
+    j.map3EditNextAt = null;
+    jobNote(j, 'Stats update stopped: ' + why);
+  }).then(function (j) {
+    if (j && j.map3EditStatus === 'stopped') {
+      notify(j, 'Stats update stopped', why);
+      return Promise.all([closeWatchTab(j), closeMap3EditTab(j)]);
+    }
+  });
+}
+function checkPostedMap3(job) {
+  var id = job.id;
+  checking[id] = true;
+  var shouldBuild = false;
+  return watchTab(job).then(function (w) {
+    return readMatchStateSettled(w.tabId, w.token).then(function (s) {
+      return updateJob(id, function (j) {
+        if (j.state !== 'posted' || j.map3EditStatus !== 'waiting') return;
+        j.watchTabId = w.tabId;
+        j.map3EditNextAt = Date.now() + MAP3_CHECK_MS;
+        if (s.stale || s.challenged || !s.isMatchPage || !s.over) {
+          j.map3EditErrors = (j.map3EditErrors || 0) + 1;
+          if (j.map3EditErrors >= 2) j.replaceWatchTab = true;
+          if (j.map3EditErrors >= 10) {
+            j.map3EditStatus = 'stopped';
+            jobNote(j, 'Stats update stopped: cannot read HLTV after ten tries');
+          } else {
+            jobNote(j, 'Stats check could not read a settled match page');
+          }
+          return;
+        }
+        j.map3EditErrors = 0;
+        if (!s.statsReady) {
+          // Avoid a log line every minute while HLTV is still updating.
+          if (!j.map3EditLastWaitingLog || Date.now() - j.map3EditLastWaitingLog >= 5 * 60000) {
+            jobNote(j, 'Map statistics still missing', { missing: s.mapsMissingStats });
+            j.map3EditLastWaitingLog = Date.now();
+          }
+          return;
+        }
+        j.map3EditStatus = 'building';
+        j.map3EditStartedAt = Date.now();
+        shouldBuild = true;
+        jobNote(j, 'All statistics available; regenerating thread');
+      }).then(function (j) {
+        if (!j) return;
+        if (j.map3EditStatus === 'stopped') return closeWatchTab(j);
+        if (shouldBuild && j.map3EditStatus === 'building') {
+          return ungroupTab(w.tabId).then(function () {
+            return sendToTab(w.tabId, { type: 'scheduledRegenerate', jobId: id }, 15);
+          }).then(function (r) {
+            if (!r || !r.accepted) throw new Error((r && r.error) || 'no response from the match tab');
+          }).catch(function (e) { return map3BuildFailed(id, errorText(e)); });
+        }
+        return regroupTab(w.tabId);
+      });
+    });
+  }).catch(function (e) {
+    return updateJob(id, function (j) {
+      if (j.state !== 'posted' || j.map3EditStatus !== 'waiting') return;
+      j.map3EditErrors = (j.map3EditErrors || 0) + 1;
+      j.map3EditNextAt = Date.now() + MAP3_CHECK_MS;
+      if (j.map3EditErrors >= 2) j.replaceWatchTab = true;
+      if (j.map3EditErrors >= 10) {
+        j.map3EditStatus = 'stopped';
+        jobNote(j, 'Stats update stopped: ten failed HLTV checks');
+      } else jobNote(j, 'Stats check failed', { error: errorText(e) });
+    }).then(function (j) {
+      if (j && j.map3EditStatus === 'stopped') return closeWatchTab(j);
+    });
+  }).then(function () { delete checking[id]; }, function (e) {
+    delete checking[id];
+    console.error('[PMT schedule] Map 3 check:', e);
+  });
+}
+function map3BuildFailed(id, error) {
+  return updateJob(id, function (j) {
+    if (j.state !== 'posted' || j.map3EditStatus !== 'building') return;
+    j.map3BuildErrors = (j.map3BuildErrors || 0) + 1;
+    if (j.map3BuildErrors >= MAX_BUILD_ATTEMPTS) {
+      j.map3EditStatus = 'stopped';
+      jobNote(j, 'Stats regeneration stopped: ' + error);
+    } else {
+      j.map3EditStatus = 'waiting';
+      j.map3EditNextAt = Date.now() + MAP3_CHECK_MS;
+      jobNote(j, 'Stats regeneration failed; retrying', { error: error });
+    }
+  }).then(function (j) {
+    if (!j) return;
+    if (j.map3EditStatus === 'stopped') return closeWatchTab(j);
+    if (j.map3EditStatus === 'waiting') return regroupTab(j.watchTabId);
+  });
+}
+function validRedditThread(job) {
+  try {
+    var url = new URL(job.threadUrl);
+    if (!/^https:$/.test(url.protocol) || !/^(old|www)\.reddit\.com$/.test(url.hostname)) return null;
+    var m = /^\/r\/([^/]+)\/comments\/([a-z0-9]+)(?:\/|$)/i.exec(url.pathname);
+    if (!m || decodeURIComponent(m[1]).toLowerCase() !== String(job.subreddit).toLowerCase()) return null;
+    return { path: url.pathname, fullname: 't3_' + m[2].toLowerCase(), subreddit: decodeURIComponent(m[1]) };
+  } catch (e) { return null; }
+}
+function startMap3Edit(job) {
+  var started = false;
+  var priorEditTabId = null;
+  return updateJob(job.id, function (j) {
+    if (j.state !== 'posted' || j.map3EditStatus !== 'editing' ||
+        !j.map3EditNextAt || j.map3EditNextAt > Date.now()) return;
+    if (!validRedditThread(j)) return;
+    if ((j.map3EditAttempts || 0) >= MAP3_MAX_EDIT_ATTEMPTS) return;
+    j.map3EditAttempts = (j.map3EditAttempts || 0) + 1;
+    priorEditTabId = j.map3EditTabId;
+    j.map3EditTabId = null;  // the old tab's removal must not schedule another retry
+    j.map3EditNextAt = null;
+    j.map3EditStartedAt = Date.now();
+    jobNote(j, 'opening Reddit to edit the existing thread', { attempt: j.map3EditAttempts });
+    started = true;
+  }).then(function (j) {
+    if (!j || j.map3EditStatus !== 'editing') return;
+    var target = validRedditThread(j);
+    if (!target) return map3Stop(j.id, 'invalid or wrong-subreddit thread URL');
+    if (!started) return;
+    return closeMap3EditTab({ map3EditTabId: priorEditTabId }).then(function () {
+      return openScheduledTab('https://old.reddit.com' + target.path + '#pmt-edit=' + encodeURIComponent(j.id), {
+        grouped: false,
+        created: function (tabId) {
+          return updateJob(j.id, function (x) {
+            if (x.state === 'posted' && x.map3EditStatus === 'editing') x.map3EditTabId = tabId;
+          });
+        }
+      });
+    }).catch(function (e) { return map3EditFailed(j.id, 'could not open Reddit: ' + errorText(e), false); });
+  });
+}
+function map3Regenerated(msg) {
+  if (!msg.ok || !msg.body) return map3BuildFailed(msg.jobId, msg.error || 'empty regenerated thread');
+  var startEdit = false, finished = false;
+  return updateJob(msg.jobId, function (j) {
+    if (j.state !== 'posted' || j.map3EditStatus !== 'building') return;
+    if (msg.gamblingLeft && msg.gamblingLeft.length) {
+      j.map3EditStatus = 'stopped';
+      jobNote(j, 'Stats update stopped: regenerated body contains a blocked term');
+      finished = true;
+    } else if (msg.body === j.body) {
+      j.map3EditStatus = 'done';
+      jobNote(j, 'Statistics ready, but generated body was already current; no edit needed');
+      finished = true;
+    } else {
+      j.map3UpdatedBody = msg.body;
+      j.map3EditStatus = 'editing';
+      j.map3EditNextAt = Date.now();
+      startEdit = true;
+      jobNote(j, 'regenerated thread; preparing to edit Reddit', { bodyLength: msg.body.length });
+    }
+  }).then(function (j) {
+    if (!j) return;
+    if (finished) return closeWatchTab(j);
+    if (startEdit) return regroupTab(j.watchTabId).then(function () { return startMap3Edit(j); });
+  });
+}
+function jobForMap3Edit(msg, sender) {
+  return readJobs().then(function (jobs) {
+    var tabId = sender.tab && sender.tab.id;
+    var j = jobs[msg.jobId];
+    if (!j && tabId != null) {
+      jobList(jobs).forEach(function (x) {
+        if (x.map3EditTabId === tabId) j = x;
+      });
+    }
+    if (!j || j.state !== 'posted' || j.map3EditStatus !== 'editing' ||
+        tabId == null || tabId !== j.map3EditTabId || !j.map3UpdatedBody) {
+      return { ok: false, none: true };
+    }
+    var target = validRedditThread(j);
+    var page = sender.tab.url || '';
+    if (!target || !new RegExp('/comments/' + target.fullname.slice(3) + '(?:/|$)', 'i').test(page)) {
+      return { ok: false, error: 'thread address does not match the posted thread' };
+    }
+    return { ok: true, jobId: j.id, thingId: target.fullname,
+             subreddit: target.subreddit, originalBody: j.body, newBody: j.map3UpdatedBody };
+  });
+}
+function map3EditFailed(id, reason, permanent, tabId) {
+  return updateJob(id, function (j) {
+    if (j.state !== 'posted' || j.map3EditStatus !== 'editing') return;
+    if (tabId != null && tabId !== j.map3EditTabId) return;
+    if (permanent || (j.map3EditAttempts || 0) >= MAP3_MAX_EDIT_ATTEMPTS ||
+        Date.now() >= j.map3EditDeadline) {
+      j.map3EditStatus = 'stopped';
+      jobNote(j, 'Reddit stats edit stopped: ' + reason);
+    } else {
+      j.map3EditNextAt = Date.now() + MAP3_CHECK_MS;
+      jobNote(j, 'Reddit stats edit failed; retrying', { error: reason, attempt: j.map3EditAttempts });
+    }
+  }).then(function (j) {
+    if (!j) return;
+    if (j.map3EditStatus === 'stopped') {
+      notify(j, 'Stats update stopped', reason);
+      return Promise.all([closeMap3EditTab(j), closeWatchTab(j)]);
+    }
+  });
+}
+function map3EditResult(msg, sender) {
+  var tabId = sender.tab && sender.tab.id;
+  if (!msg.ok) return map3EditFailed(msg.jobId, msg.error || 'Reddit edit failed', !!msg.permanent, tabId);
+  var done = false;
+  return updateJob(msg.jobId, function (j) {
+    if (j.state !== 'posted' || j.map3EditStatus !== 'editing' ||
+        tabId == null || tabId !== j.map3EditTabId) return;
+    j.body = j.map3UpdatedBody;
+    j.map3UpdatedBody = undefined;
+    j.map3EditStatus = 'done';
+    j.map3EditNextAt = null;
+    jobNote(j, 'Reddit thread updated with available statistics', { url: j.threadUrl });
+    done = true;
+  }).then(function (j) {
+    if (!done) return;
+    notify(j, 'Post-match thread updated', j.title || j.label);
+    return Promise.all([closeWatchTab(j), closeMap3EditTab(j)]);
   });
 }
 
@@ -939,6 +1255,24 @@ function tick() {
           }).then(function (x) { if (x && x.state === 'attention') announce(x); }));
         } else {
           work.push(thawIfFrozen(j, j.submitTabId));
+        }
+      } else if (j.state === 'posted' && ['waiting', 'building', 'editing'].indexOf(j.map3EditStatus) >= 0) {
+        if (now >= (j.map3EditDeadline || 0)) {
+          work.push(map3Stop(j.id, '60-minute stats monitoring window expired'));
+        } else if (j.map3EditStatus === 'waiting' &&
+                   now >= (j.map3EditNextAt || 0) && !checking[j.id]) {
+          work.push(checkPostedMap3(j));
+        } else if (j.map3EditStatus === 'building' &&
+                   now - (j.map3EditStartedAt || 0) > BUILD_TIMEOUT_MS) {
+          work.push(map3BuildFailed(j.id, 'regeneration timed out'));
+        } else if (j.map3EditStatus === 'editing') {
+          if (j.map3EditNextAt && now >= j.map3EditNextAt) {
+            work.push(startMap3Edit(j));
+          } else if (!j.map3EditNextAt && now - (j.map3EditStartedAt || 0) > MAP3_EDIT_TIMEOUT_MS) {
+            work.push(map3EditFailed(j.id, 'Reddit did not confirm the edit', false, j.map3EditTabId));
+          } else if (j.map3EditTabId) {
+            work.push(thawIfFrozen(j, j.map3EditTabId));
+          }
         }
       } else if (FINISHED_STATES.indexOf(j.state) >= 0 && now - (j.updatedAt || 0) > KEEP_FINISHED_MS) {
         prune.push(j.id);
@@ -1093,7 +1427,10 @@ var SCHEDULE_HANDLERS = {
   scheduledSubmitClicking: submitGoAhead,
   scheduledSubmitResult: function (msg) { return submitStopped(msg); },
   scheduledSubmitLog: function (msg) { return submitPageLog(msg); },
-  scheduledLanded: submitLanded
+  scheduledLanded: submitLanded,
+  scheduledRegenerated: function (msg) { return map3Regenerated(msg); },
+  scheduledMap3EditJob: jobForMap3Edit,
+  scheduledMap3EditResult: map3EditResult
 };
 
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {

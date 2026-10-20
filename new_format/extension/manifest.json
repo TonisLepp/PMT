@@ -21,7 +21,20 @@
     "https://www.reddit.com/*"
   ],
   "background": {
-    "service_worker": "src/background.js"
+    "service_worker": "src/background.js",
+    "scripts": [
+      "src/background.js",
+      "src/scheduler.js"
+    ]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "pmt-firefox@addons.local",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
   },
   "content_scripts": [
     {

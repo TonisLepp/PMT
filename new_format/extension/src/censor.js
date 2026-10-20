@@ -39,12 +39,13 @@ var GAMBLING_NAME_RULES = [
   [/\bBC\s?\.?\s?Game\b/gi, 'BCG'],            // "BC.Game Esports" -> BCG Esports; slug "bcgame"
   [/\bBET[-\s]?M\s+33\b/gi, '33'],             // Liquipedia's old "BET-M 33"
   [/\bBET[-\s]?M\b/gi, '33'],                  // HLTV "BET-M"
-  [/\bPARIVISION\b/gi, 'PVISION'],             // as at the Esports World Cup
+  [/\bPARIVISION\b/gi, 'VISION'],             // as at the Esports World Cup
   [/\bBetBoom\b/gi, 'BB'],                     // "BetBoom Team" -> BB Team (EWC); HLTV "BETBOOM" -> BB
   [/\b1win\b/gi, '1W'],                        // Liquipedia: "1w Team"
   [/\bSportsBetExpert\b/gi, 'SBE'],
   // event sponsors
   [/\bStake\s+Ranked\b/gi, 'StarLadder Ranked'],   // StarLadder's series, billed "StarLadder Stake Ranked"
+  [/\bStake\s+Pulse\b/gi, 'BME Pulse'],            // Black Molly Entertainment's Stake Pulse Beat series
   [/\bThunderpick\b/gi, 'TP'],                     // Thunderpick World Championship
   [/\bParimatch\b/gi, 'PM']                        // Parimatch League
 ];

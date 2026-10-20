@@ -52,8 +52,97 @@
     if (/\/submit\b/.test(document.referrer)) {
       chrome.runtime.sendMessage({ type: 'scheduledLanded', url: location.href.split('#')[0] },
         function () { void chrome.runtime.lastError; });
+    } else {
+      // Only the scheduler's exact editing tab can obtain a job. Normal comment
+      // pages get { none: true } and are never modified.
+      runMap3RedditEdit();
     }
     return;
+  }
+
+  // Execute within a logged-in old.reddit.com comments page. Same-origin
+  // requests use the existing session, rather than requiring new OAuth setup.
+  function runMap3RedditEdit() {
+    var hashMatch = /(?:^#|&)pmt-edit=([^&]+)/.exec(location.hash);
+    var id = '';
+    try { if (hashMatch) id = decodeURIComponent(hashMatch[1]); } catch (e) { /* worker also matches tab */ }
+    ask({ type: 'scheduledMap3EditJob', jobId: id }).then(function (job) {
+      if (!job.ok) return;  // a regular Reddit comments tab
+      // Chrome can freeze hidden tabs; hold a lock until this short operation finishes.
+      var released = false;
+      var releaseLock = function () {};
+      var unlock = function () { released = true; releaseLock(); };
+      if (navigator.locks && navigator.locks.request) {
+        navigator.locks.request('pmt-edit-' + job.jobId, function () {
+          if (released) return null;
+          return new Promise(function (resolve) { releaseLock = resolve; });
+        }).catch(function () {});
+      }
+      var report = function (ok, error, permanent) {
+        return ask({ type: 'scheduledMap3EditResult', jobId: job.jobId,
+                     ok: ok, error: error || '', permanent: !!permanent });
+      };
+      var normText = function (s) { return String(s || '').replace(/\r\n/g, '\n'); };
+      function getPosted() {
+        return fetch('/api/info.json?id=' + encodeURIComponent(job.thingId) +
+                     '&raw_json=1&_=' + Date.now(), { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (r) { if (!r.ok) throw new Error('Reddit info HTTP ' + r.status); return r.json(); })
+          .then(function (json) {
+            var children = json && json.data && json.data.children;
+            var d = children && children[0] && children[0].data;
+            if (!d || d.name !== job.thingId || !d.is_self ||
+                String(d.subreddit || '').toLowerCase() !== String(job.subreddit).toLowerCase()) {
+              throw new Error('Reddit did not return the expected text post');
+            }
+            return d;
+          });
+      }
+      function doEdit() {
+        return getPosted().then(function (post) {
+          if (normText(post.selftext) === normText(job.newBody)) return { ok: true }; // already edited
+          if (normText(post.selftext) !== normText(job.originalBody)) {
+            return { ok: false, permanent: true, error: 'Reddit body was manually changed; refusing to overwrite' };
+          }
+          return fetch('/api/me.json?raw_json=1', { credentials: 'same-origin', cache: 'no-store' })
+            .then(function (r) { if (!r.ok) throw new Error('Reddit login HTTP ' + r.status); return r.json(); })
+            .then(function (me) {
+              var account = me && me.data;
+              if (!account || !account.name ||
+                  account.name.toLowerCase() !== String(post.author).toLowerCase()) {
+                return { ok: false, permanent: true, error: 'Not logged into the thread author account' };
+              }
+              var formHash = document.querySelector('input[name="uh"]');
+              var uh = (formHash && formHash.value) || account.modhash || '';
+              if (!uh) return { ok: false, permanent: true, error: 'Reddit session modhash unavailable' };
+              var body = new URLSearchParams({
+                api_type: 'json', thing_id: job.thingId, text: job.newBody, uh: uh, raw_json: '1'
+              });
+              return fetch('/api/editusertext', {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                           'X-Modhash': uh }, body: body.toString()
+              }).then(function (r) {
+                if (!r.ok) throw new Error('Reddit edit HTTP ' + r.status);
+                return r.json();
+              }).then(function (response) {
+                var errs = response && response.json && response.json.errors;
+                if (errs && errs.length) throw new Error('Reddit edit error: ' + JSON.stringify(errs));
+                return getPosted().then(function (after) {
+                  if (normText(after.selftext) !== normText(job.newBody)) {
+                    throw new Error('Reddit edit not confirmed by read-back');
+                  }
+                  return { ok: true };
+                });
+              });
+            });
+        });
+      }
+      doEdit().catch(function (e) {
+        return { ok: false, error: String((e && e.message) || e), permanent: false };
+      }).then(function (r) {
+        return report(!!r.ok, r.error, r.permanent);
+      }).then(function () { unlock(); }, function () { unlock(); });
+    });
   }
 
   var hash = {};
@@ -471,7 +560,27 @@
     });
   }
 
+
+  function disableInboxReplies(form) {
+    const checkbox = form.querySelector(
+      'input[type="checkbox"][name="sendreplies"]'
+    );
+
+    if (!checkbox) return false;
+
+    if (checkbox.checked) checkbox.click();
+
+    return !checkbox.checked;
+  }
+
+
   function fillAndSubmit(f, job) {
+    if (!disableInboxReplies(f.form)) {
+    return stop(
+      'reply-setting',
+      'Could not disable inbox replies'
+    );
+  }
     fill(f.title, job.title);
     fill(f.text, job.body);
     if (f.title.value !== job.title || f.text.value !== job.body) {
@@ -510,7 +619,17 @@
         console.info('[PMT] not the old reddit submit form - flair left alone');
         return;
       }
+      
+      waitFor(function () {
+        return document.querySelector(
+          '#newlink input[type="checkbox"][name="sendreplies"]'
+        );
+      }, 10000).then(function (checkbox) {
+        if (checkbox && checkbox.checked) checkbox.click();
+      });
+
       pickFlair();
+
     });
   }
 
