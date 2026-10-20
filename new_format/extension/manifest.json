@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "HLTV Post-Match Thread (new format)",
   "description": "Turns an HLTV match page into a r/GlobalOffensive post-match thread in the new format, with Liquipedia event, team and bracket details.",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "permissions": [
     "storage",
     "clipboardWrite",

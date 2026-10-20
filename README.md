@@ -1,168 +1,156 @@
 # HLTV → r/GlobalOffensive Post-Match Thread Extension
 
-A browser extension for Chrome and Edge that makes creating and posting Counter-Strike match discussion threads to r/GlobalOffensive quick and easy.
+A browser extension for **Google Chrome, Microsoft Edge, and Firefox (desktop)** that helps create and post Counter-Strike match discussion threads to [r/GlobalOffensive](https://www.reddit.com/r/GlobalOffensive/).
 
-The extension automatically gathers match information from [HLTV](https://www.hltv.org/) and [Liquipedia](https://liquipedia.net/counterstrike/Main_Page), formats it into a Reddit thread, and lets you review and edit everything before posting. It also supports automatically posting threads when matches finish.
+PMT collects match information from [HLTV](https://www.hltv.org/) and [Liquipedia](https://liquipedia.net/counterstrike/Main_Page), formats it into a Reddit thread, and lets you review and edit the result before posting. It can also monitor a match and automatically submit its post-match thread when the match ends.
 
 ## Installation
 
-The extension isn't available on the Chrome Web Store, but you can install it manually in a few steps.
+### Firefox — signed add-on
 
-### 1. Download the extension
+The Firefox installer, **[`PMT-Firefox.xpi`](./PMT-Firefox.xpi)**, is located in the repository root, alongside `new_format/`. It must be the **Mozilla-signed** `.xpi` file, not a renamed ZIP archive.
 
-Download the `new_format/extension` folder from the GitHub repository.
+1. Download `PMT-Firefox.xpi` from this repository.
+2. Open Firefox and go to `about:addons`.
+3. Click the gear icon and choose **Install Add-on From File…**.
+4. Select the downloaded `.xpi` file and confirm installation.
+5. Grant any requested website permissions, then open an [HLTV match page](https://www.hltv.org/matches).
 
-**[Download Extension](https://download-directory.github.io/?url=https://github.com/FRojas1/PMT/tree/main/new_format/extension&filename=PMT-Extension)**
+You can also drag the signed `.xpi` into Firefox to start installation. The installed add-on remains available after restarting the browser. **Firefox 142 or newer** is required by the current Firefox manifest.
 
-Extract the ZIP to it's own folder on your computer. Keep this folder somewhere permanent, since your browser needs access to it for the extension to work.
+To load the Firefox source temporarily for development, use `about:debugging` → **This Firefox** → **Load Temporary Add-on** and choose `new_format/extension-firefox/manifest.json`.
 
-### 2. Install in your browser
+### Chrome / Edge — unpacked extension
 
-1. Open your browser's extensions page:
-   - **Chrome:** `chrome://extensions`
-   - **Edge:** `edge://extensions`
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select the extracted folder (the folder containing `manifest.json`).
+The extension is not distributed through the Chrome Web Store. To install it manually:
 
-The extension should now appear in your installed extensions.
+1. Download or clone this repository.
+2. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select `new_format/extension/` (the folder containing `manifest.json`).
 
-### 3. Start using it
-
-Open any [HLTV match page](https://www.hltv.org/matches).
-
-You'll see three buttons in the bottom-right corner of the page:
-
-- **Live Match Discussion Thread** — Create a discussion thread for an upcoming or ongoing match.
-- **Schedule Post-Match Thread** — Automatically create and post a thread once the match finishes.
-- **Post-Match Thread** — Generate a post-match thread for a completed match.
+Keep the folder on your computer while using the extension. The Chromium and Firefox builds have separate source folders.
 
 ## Creating a Thread
 
-1. Open the match you want to post about on HLTV.
-2. Click the appropriate thread button in the bottom-right corner.
-3. Wait for the extension to gather the match information.
-4. Review the generated thread in the extension's panel.
-5. Edit the title, body, or highlights as needed.
-6. Open the Reddit submission page and submit your thread.
+Open a match on [HLTV](https://www.hltv.org/matches). Three buttons appear near the bottom-right corner:
 
-The extension automatically formats available information, including:
+- **Live Match Discussion Thread** — Generate a discussion thread for an upcoming or ongoing match.
+- **Post-Match Thread** — Generate a post-match thread for a completed match.
+- **Schedule Post-Match Thread** — Monitor a match and prepare or automatically post a thread after it finishes.
 
-- Match scores, maps, and statistics
-- Team rosters, coaches, and player roles
-- Event details and stream links
-- Map vetoes and match highlights
-- Tournament bracket information and upcoming opponents
-- Team information and social links
+For manual thread creation:
 
-Some details come from Liquipedia. If a team or event isn't available there, the extension will still attempt to generate the thread using HLTV information.
+1. Select the appropriate thread button on the HLTV match page.
+2. Wait for PMT to gather and format the match information.
+3. Review the generated title, body, and highlights in the panel.
+4. Make any necessary changes, then open the Reddit submission page and submit the thread.
+
+Depending on what's available, threads can include scores and map statistics, player and coach information, team rosters, event details, stream links, vetoes, highlights, tournament brackets, and social links.
 
 ### Correcting Liquipedia links
 
-The extension automatically searches for the relevant Liquipedia event and team pages.
+PMT searches for the relevant Liquipedia event and team pages. If a link is wrong or missing, change its URL in the thread panel and click **Regenerate**. Corrected links are remembered for future use. Clear a URL field and regenerate to search again.
 
-Occasionally, it may select the wrong page or fail to find one. If that happens, you can manually edit the Liquipedia URLs displayed in the panel and click **Regenerate**.
-
-The corrected links are remembered for future use.
-
-To make the extension search again, clear the corresponding URL field and click **Regenerate**.
+If a Liquipedia page is unavailable, PMT will still attempt to build a thread using available HLTV data.
 
 ## Scheduling Post-Match Threads
 
-Instead of waiting for a match to finish, you can schedule its post-match thread in advance.
+1. Open an HLTV match page and click **Schedule Post-Match Thread**.
+2. PMT checks the match periodically until it finishes.
+3. After the match ends, PMT checks whether the required match and finished-map statistics are available.
+4. If statistics are delayed, PMT waits **up to five minutes**, then generates the thread anyway rather than waiting indefinitely.
+5. Depending on the **Auto-submit** setting, PMT either attempts to submit the thread to Reddit or prepares it for manual review.
 
-1. Open the match on HLTV.
-2. Click **Schedule Post-Match Thread**.
-3. The extension will periodically check whether the match has finished.
-4. Once the match ends and statistics become available, it generates the thread and prepares the Reddit submission.
-5. If automatic submission is enabled, the extension attempts to post it automatically.
+The missing-statistics check covers **every finished map**, regardless of map number or series length (for example, best-of-1, best-of-3, or best-of-5). A finished map also counts as missing statistics if HLTV has not yet published its map-statistics link.
 
-You can schedule a thread before a match begins or while it's in progress.
+### Automatically updating a posted thread when statistics arrive
 
-### Managing scheduled threads
+If PMT **automatically posts** a scheduled thread while statistics for one or more finished maps are still missing, it can update that **same Reddit post** later:
 
-Open the extension's **Options** page and find **Scheduled threads**.
+1. After posting, PMT keeps checking HLTV approximately once per minute.
+2. When all required statistics become available, it regenerates the thread body.
+3. It edits the original Reddit post rather than submitting a duplicate.
+4. It stops checking after a successful update or when the **60-minute monitoring window** expires.
 
-Here, you can:
+This applies to **any missing finished-map statistics**, not only Map 3 or matches ending 2–1. It can also handle a delayed final map in a longer series, such as Map 4 or Map 5 in a best-of-5.
 
-- View scheduled, completed, and failed threads
-- Cancel a scheduled thread
-- Retry a failed job
-- Open a successfully posted thread
-- Copy a thread's title or body
-- View logs when something goes wrong
+To avoid overwriting your changes, PMT will not automatically replace a Reddit post whose body has been manually edited since PMT submitted it. The update feature applies to threads **automatically submitted by the scheduler**; manually submitted threads are not automatically edited.
 
-The extension also displays notifications when a thread is posted or requires your attention.
+> **Release note:** The automatic edit feature requires the updated `scheduler.js`, `content.js`, and `reddit.js` to be included in the distributed extension. Rebuild and re-sign `PMT-Firefox.xpi` after updating those files; an older signed `.xpi` will not gain the feature just because the repository source changed.
 
 ### Automatic submission
 
-In Options, you can configure whether scheduled threads should be submitted automatically.
+Use the extension's **Options** page to configure automatic submission:
 
-- **Enabled:** The extension attempts to submit the thread when it's ready.
-- **Disabled:** The extension prepares the submission for you to review and post manually.
+- **Enabled:** PMT attempts to submit a scheduled thread when it is ready.
+- **Disabled:** PMT prepares the thread for you to review and post manually.
 
-For automatic posting, you'll need to be logged into Reddit. Keep your browser running while scheduled jobs are active.
+Automatic posting requires an active Reddit login and a running browser. If Reddit requests a CAPTCHA, rejects the post, or the required flair cannot be applied, manual intervention may be necessary.
 
-If Reddit requires a CAPTCHA, rejects the submission, or the extension cannot apply the required flair, it will stop and leave the submission for you to finish manually.
+### Managing scheduled threads
 
-**Important:** Automatically generated threads can contain missing or incorrect information, especially when external sources are unavailable. If you want to review every thread before publication, disable automatic submission.
+Open **Options → Scheduled threads** to view pending, posted, and failed jobs, cancel a job, retry a failed job, open an existing Reddit post, copy the generated content, or inspect its log.
 
 ## Settings and Troubleshooting
 
-You can access the extension's Options page through your browser's extension management page.
-
 ### Missing or incorrect information
 
-The extension uses HLTV and Liquipedia to collect information. Occasionally, a page may be unavailable or a search may return the wrong result.
+If a generated thread is incomplete or inaccurate:
 
-If a generated thread is missing information:
-
-1. Check the status message in the extension's panel.
-2. Verify that the Liquipedia URLs are correct.
+1. Check the thread panel's status messages.
+2. Verify the selected Liquipedia pages.
 3. Correct any incorrect URLs and click **Regenerate**.
-4. Review the generated thread before submitting.
+4. Review the updated body before submitting it.
 
-You can also use **Forget Liquipedia links** in Options to clear previously remembered links.
+Use **Forget Liquipedia links** in Options to clear previously remembered links.
 
-### Scheduled thread isn't posting
+### Scheduled thread not posting or updating
 
-Check the job's status under **Options → Scheduled threads**.
+Check **Options → Scheduled threads** and inspect the job log. Common causes include an unfinished match, delayed HLTV statistics, an unavailable source page, an interrupted browser tab, Reddit authentication problems, CAPTCHA, or flair errors.
 
-Some common reasons a thread may not post automatically include:
-
-- The match hasn't finished yet.
-- HLTV hasn't published the match statistics.
-- Reddit requires a CAPTCHA or manual action.
-- Reddit rejected the submission or the required flair couldn't be applied.
-- The extension couldn't load the required pages.
-
-If a job requires your attention, you can open its submission tab or copy the generated content and post it manually.
+If a thread posts without some map statistics, the automatic update should keep checking **only if** that job was auto-submitted, its post-publication update state was activated, and the installed build contains the updated auto-edit code. A manually edited Reddit post will not be overwritten.
 
 ### Reporting problems
 
-If something goes wrong, the extension includes diagnostic logs to help identify the issue.
+- **Copy diagnostics** in the thread panel provides details about the latest thread generation.
+- **Options → Diagnostics** provides recent generation logs.
+- **Options → Scheduled threads → Copy log** provides an individual scheduled job's log.
 
-- **Copy diagnostics** in the thread panel copies information about the most recent thread generation.
-- **Options → Diagnostics** contains logs from the five most recent runs.
-- **Options → Scheduled threads → Copy log** provides information about an individual scheduled job.
-
-When reporting an issue, include a description of what happened and the relevant logs. For scheduled posting problems, include both the job log and the thread generation diagnostics.
+Include the relevant logs and a brief description when reporting an issue. Remove any personal information before sharing logs.
 
 ## Updating the Extension
 
-To update the extension:
+### Chrome / Edge
 
-1. Download the latest version of the `new_format/extension` folder.
-2. Replace the contents of your existing extension folder with the new files.
-3. Open `chrome://extensions` or `edge://extensions`.
-4. Click the **Reload** button on the extension.
+1. Download the latest `new_format/extension/` source files.
+2. Replace the contents of your existing unpacked extension folder.
+3. Open `chrome://extensions` or `edge://extensions` and click **Reload** on PMT.
 
-You should now be running the updated version.
+### Firefox
+
+1. Download the latest **Mozilla-signed** `PMT-Firefox.xpi`.
+2. Open `about:addons` → gear icon → **Install Add-on From File…** and select it.
+3. Confirm the update if prompted.
+
+To replace the currently installed add-on, the new `.xpi` must use the same Firefox add-on ID and a newer version number in its manifest. Manually distributed unlisted add-ons do not automatically update unless a separate update mechanism has been configured.
+
+## Repository Layout
+
+```text
+PMT/
+├── README.md
+├── PMT-Firefox.xpi           # Mozilla-signed Firefox installer
+├── new_format/
+│   ├── extension/            # Chrome / Edge extension source
+│   └── extension-firefox/    # Firefox extension source
+└── old_format/               # Legacy format
+```
 
 ## Notes
 
-- Compatible with Chromium-based browsers, including Google Chrome and Microsoft Edge.
-- Designed for creating threads on r/GlobalOffensive.
-- Uses publicly available information from HLTV and Liquipedia.
-- Requires an internet connection and access to the relevant websites.
+- PMT is designed for [r/GlobalOffensive](https://www.reddit.com/r/GlobalOffensive/).
+- It uses publicly accessible HLTV and Liquipedia information and interacts with Reddit for submission and editing.
+- An internet connection and access to the relevant websites are required.
 - This is an unofficial community tool and is not affiliated with HLTV, Liquipedia, Reddit, or their respective owners.
