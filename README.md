@@ -143,8 +143,7 @@ PMT/
 ├── README.md
 ├── PMT-Firefox.xpi           # Mozilla-signed Firefox installer
 ├── new_format/
-│   ├── extension/            # Chrome / Edge extension source
-│   └── extension-firefox/    # Firefox extension source
+│   └── extension/            # Extension source code
 └── old_format/               # Legacy format
 ```
 

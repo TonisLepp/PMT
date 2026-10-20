@@ -703,6 +703,24 @@ function generate(opts) {
               .then(function () { return null; });
           }
           var parsed = parseTeamPage(r.doc, url);
+          if (!isMatchingTeam(name, parsed.name)) {
+            PMTLog.warn('Liquipedia team name mismatch', {
+              expected: name,
+              found: parsed.name,
+              url: url
+            });
+
+            notes.push(
+              'Liquipedia team mismatch for ' + name +
+              ' (' + parsed.name + '), using HLTV data'
+            );
+
+            return cacheForget(
+              liquipediaCacheKey('team', d.teams[i].urlPlain)
+            ).then(function () {
+              return null;
+            });
+          }
           PMTLog.info('liquipedia team parsed ' + name, teamSummary(parsed));
           if (parsed.links.blocked.length) {
             PMTLog.info('links dropped for ' + name + ' - reddit autoremoves these', {

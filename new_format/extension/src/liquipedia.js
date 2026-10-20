@@ -12,6 +12,31 @@ function lpText(el) {
   return el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
 }
 
+
+function normalizeTeamName(name) {
+  var normalized = String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\b(the|team|esports?|gaming|club|clan)\b/g, '')
+    .replace(/[^a-z0-9]/g, '');
+
+  var aliases = {
+    navi: 'natusvincere',
+    nip: 'ninjasinpyjamas'
+  };
+
+  return aliases[normalized] || normalized;
+}
+
+function isMatchingTeam(hltvName, liquipediaName) {
+  var expected = normalizeTeamName(hltvName);
+  var actual = normalizeTeamName(liquipediaName);
+
+  return !!expected && expected === actual;
+}
+
+
 // Liquipedia flag images are named like ".../36px-Fr_hd.png"
 function lpFlag(img) {
   if (!img) return '';
