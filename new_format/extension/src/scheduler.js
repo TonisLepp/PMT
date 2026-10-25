@@ -1443,11 +1443,32 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   return true;
 });
 
-// Every worker start: pick the group back up for background.js's synchronous
-// checks, find out whether the alarm survived (a browser restart may clear
-// it), then bring it and the badge in line with the stored jobs.
-liveGroup();
-chrome.alarms.get(SCHEDULE_ALARM, function (a) {
-  if (alarmOn === null) alarmOn = !!a;
-  withJobs(function () {}, true);
+
+/*
+ * Restore scheduled checks when the background script starts,
+ * including after Firefox has been restarted.
+ */
+function restoreScheduler() {
+  return new Promise(function (resolve) {
+    chrome.alarms.get(SCHEDULE_ALARM, function (alarm) {
+      alarmOn = !!alarm;
+      resolve();
+    });
+  }).then(function () {
+    return withJobs(function () {}, true);
+  }).then(function () {
+    return tick();
+  }).catch(function (e) {
+    console.error('[PMT schedule] Restore failed:', e);
+  });
+}
+
+// Firefox needs this listener to wake the extension on startup.
+chrome.runtime.onStartup.addListener(function () {
+  restoreScheduler();
 });
+
+// Also recover after the background script starts for other reasons.
+liveGroup();
+restoreScheduler();
+
