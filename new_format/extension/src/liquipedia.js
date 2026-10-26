@@ -18,7 +18,7 @@ function normalizeTeamName(name) {
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-    .replace(/\b(the|team|esports?|gaming|club|clan)\b/g, '')
+    .replace(/\b(the|team|esports?|gaming|cs|club|clan)\b/g, '')
     .replace(/[^a-z0-9]/g, '');
 
   var aliases = {
