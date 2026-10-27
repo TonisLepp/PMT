@@ -684,7 +684,7 @@ function navigatedResult(r, url, t0, ok) {
 // handing the interstitial back as the article.
 function navigateInTab(tabId, url, t0) {
   return navigate(tabId, url)
-    .then(function () { return readNavigatedPage(tabId, url, t0, 6); });
+    .then(function () { return readNavigatedPage(tabId, url, t0, 15); });
 }
 
 function readNavigatedPage(tabId, url, t0, left) {
