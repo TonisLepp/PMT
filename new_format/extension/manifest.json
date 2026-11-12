@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "HLTV Post-Match Thread (new format)",
-  "description": "Turns an HLTV match page into a r/GlobalOffensive post-match thread in the new format, with Liquipedia event, team and bracket details.",
-  "version": "2.7.1",
+  "name": "HLTV Post-Match Thread Tool",
+  "description": "Creates HLTV live and post-match discussions with Liquipedia details. Schedule a PMT alone, or an LMT that updates and links to its automatic PMT.",
+  "version": "2.7.2",
   "permissions": [
     "storage",
     "clipboardWrite",

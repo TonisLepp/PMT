@@ -749,7 +749,7 @@ chrome.action.onClicked.addListener(function (tab) {
   }
 });
 
-// "Schedule Post-Match Thread": watch a match until it ends, then post it.
+// Scheduled match workflows: PMT alone, or LMT updates followed by PMT and a link back.
 // Shares this file's tab helpers, so it is loaded last.
 if (typeof importScripts === 'function') {
   importScripts('scheduler.js');

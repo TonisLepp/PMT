@@ -26,10 +26,9 @@
  *   Live Match Discussion Thread   upcoming or in progress: streams, veto if it
  *                                  exists, completed maps only, no VRS
  *
- * And a third button that schedules the first: the service worker
- * (scheduler.js) keeps a tab on this match, reloads it until the match is over,
- * then asks the content script in *that* tab to run the same Post-Match
- * pipeline (`scheduledGenerate`) and posts what comes back.
+ * Two schedule buttons use one match workflow in scheduler.js: PMT alone, or
+ * an LMT that updates after maps and is followed by a PMT and a closing link.
+ * The same watch tab runs both generation pipelines.
  */
 
 var DEFAULTS = {
@@ -881,6 +880,8 @@ function generate(opts) {
 
       var out = buildThread(clean.d, {
         kind: kind,
+        matchOver: !!opts.matchOver,
+        postMatchUrl: opts.postMatchUrl || '',
         lp: clean.lp,
         lpEventUrl: clean.lpEventUrl,
         streams: clean.streams,
@@ -939,10 +940,11 @@ function generate(opts) {
 
 /* ---------------------------------------------------------------- schedule */
 
-// Both thread types are independent jobs. Old saved jobs have no kind and are post-match.
+// Both schedule buttons refer to the same persisted match workflow.
 var JOBS_KEY = 'pmt:jobs';
 var scheduleButtons = { live: null, post: null };
 var scheduledJobs = { live: null, post: null };
+var scheduledSubreddit = 'GlobalOffensive';
 
 function matchIdHere() {
   return (location.pathname.match(/^\/matches\/(\d+)(?:\/|$)/) || [])[1] || '';
@@ -952,7 +954,8 @@ function latestJobHere(jobs, kind) {
   var best = null;
   Object.keys(jobs || {}).forEach(function (k) {
     var j = jobs[k];
-    if (j.matchId === id && (j.kind || 'post') === kind &&
+    if (j.matchId === id && j.threads && j.threads[kind] &&
+        String(j.subreddit).toLowerCase() === scheduledSubreddit.toLowerCase() &&
         (!best || j.createdAt > best.createdAt)) best = j;
   });
   return best;
@@ -964,41 +967,48 @@ function paintScheduleButton(kind) {
   var button = scheduleButtons[kind];
   if (!button) return;
   var j = scheduledJobs[kind];
-  var state = j && j.state !== 'cancelled' ? j.state : '';
+  var thread = j && j.threads[kind];
+  var state = j && !j.cancelled && thread ? thread.state : '';
   var label = kind === 'live' ? 'Schedule Live Match Discussion' : 'Schedule Post-Match Thread';
-  if (state === 'watching') label = kind === 'live' ? 'Scheduled - posts 5 minutes before start' : 'Scheduled - waiting for match end';
+  if (state === 'watching') label = kind === 'live' ? 'Scheduled - LMT + PMT' : 'Scheduled - PMT at match end';
   if (state === 'generating') label = 'Scheduled - building the thread…';
   if (state === 'submitting') label = 'Scheduled - posting to Reddit…';
-  if (state === 'posted') label = kind === 'live' && ['waiting', 'building', 'editing'].indexOf(j.map3EditStatus) >= 0
-    ? 'Live posted ✓ - monitoring maps' : 'Posted ✓ - open the thread';
+  if (state === 'posted') label = kind === 'live'
+    ? thread.finalState === 'done' ? 'LMT finalized ✓ - open the thread'
+      : thread.finalState === 'stopped' ? 'LMT final edit needs attention'
+      : j.liveUpdatesStopped ? 'LMT posted ✓ - updates stopped'
+      : j.overSince ? 'LMT posted ✓ - preparing PMT handoff' : 'LMT posted ✓ - monitoring maps'
+    : 'PMT posted ✓ - open the thread';
+  if (state === 'skipped') label = 'LMT skipped - match already over';
   if (state === 'attention') label = 'Scheduled thread needs you';
-  if (state === 'failed') label = 'Schedule failed - schedule again';
+  if (state === 'failed') label = 'Scheduled thread failed - manage in Options';
   button.textContent = label;
   button.className = 'pmt-launch pmt-launch-schedule' + (state ? ' pmt-sched-' + state : '');
-  var tip = kind === 'live' ? 'Post 5 minutes before the scheduled start and edit the thread after every map'
+  var tip = kind === 'live' ? 'Post an LMT five minutes before start, update after maps, then post the PMT and link it from the LMT'
     : 'Post when the match ends';
   if (state === 'watching') {
     tip = (j.lastCheckAt ? 'Last checked ' + clockTime(j.lastCheckAt) + '. ' : '') +
-      (j.nextCheckAt ? 'Next check around ' + clockTime(j.nextCheckAt) + '. ' : '') + 'Click to cancel.';
+      (j.nextCheckAt ? 'Next check around ' + clockTime(j.nextCheckAt) + '. ' : '') + 'Click to cancel the entire match workflow.';
   } else if (state === 'generating' || state === 'submitting') {
-    tip = 'Click to cancel.';
+    tip = 'Click to cancel the entire match workflow.';
   } else if (state === 'posted') {
-    tip = (j.threadUrl || '') + (kind === 'live' && j.map3EditStatus === 'waiting' ? ' (monitoring maps)' : '');
+    tip = thread.threadUrl || '';
   } else if (state === 'attention' || state === 'failed') {
-    tip = j.error || '';
+    tip = thread.error || '';
   }
   button.title = tip;
 }
 function onScheduleClick(kind) {
   var j = scheduledJobs[kind];
-  var state = j && j.state;
+  var thread = j && j.threads[kind];
+  var state = j && !j.cancelled && thread && thread.state;
   if (state === 'watching' || state === 'generating' || state === 'submitting') {
-    if (!confirm('Cancel the scheduled ' + (kind === 'live' ? 'live discussion' : 'post-match thread') + '?')) return;
+    if (!confirm('Cancel this entire match workflow, including any pending LMT and PMT?')) return;
     chrome.runtime.sendMessage({ type: 'scheduleCancel', jobId: j.id });
     return;
   }
-  if (state === 'posted' || state === 'attention') {
-    chrome.runtime.sendMessage({ type: 'scheduleFocus', jobId: j.id });
+  if (['posted', 'attention', 'failed', 'skipped'].indexOf(state) >= 0) {
+    chrome.runtime.sendMessage({ type: 'scheduleFocus', jobId: j.id, kind: state === 'skipped' ? 'post' : kind });
     return;
   }
   var label = document.title;
@@ -1022,10 +1032,14 @@ function updateScheduledJobs(jobs) {
   });
 }
 function loadScheduledJobs() {
-  chrome.storage.local.get([JOBS_KEY], function (v) { updateScheduledJobs(v && v[JOBS_KEY]); });
+  chrome.storage.sync.get({ subreddit: 'GlobalOffensive' }, function (settings) {
+    scheduledSubreddit = String(settings.subreddit || 'GlobalOffensive').trim();
+    chrome.storage.local.get([JOBS_KEY], function (v) { updateScheduledJobs(v && v[JOBS_KEY]); });
+  });
 }
 chrome.storage.onChanged.addListener(function (changes, area) {
   if (area === 'local' && changes[JOBS_KEY]) updateScheduledJobs(changes[JOBS_KEY].newValue);
+  if (area === 'sync' && changes.subreddit) loadScheduledJobs();
 });
 
 /* -------------------------------------------------------------- entrypoint */
@@ -1082,12 +1096,14 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     var isUpdate = msg.type === 'scheduledRegenerate';
     generate({
       kind: msg.kind === 'live' ? 'live' : 'post',
+      matchOver: !!msg.matchOver,
+      postMatchUrl: msg.postMatchUrl || '',
       noOpen: true,
       scheduled: msg.jobId,
       onDone: function (res) {
         awake.release();
         chrome.runtime.sendMessage(Object.assign({ type: isUpdate ? 'scheduledRegenerated' : 'scheduledThread',
-                                                   jobId: msg.jobId }, res),
+                                                   jobId: msg.jobId, requestId: msg.requestId }, res),
           function () { void chrome.runtime.lastError; });
       }
     });

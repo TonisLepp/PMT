@@ -170,6 +170,12 @@ function jobReport(job) {
       (job.staleChecks ? ', stale pages in a row ' + job.staleChecks : '') +
       (job.errors ? ', errors in a row ' + job.errors : ''),
     '# copied ' + when(Date.now()),
+    '# threads ' + JSON.stringify(job.threads && Object.keys(job.threads).map(function (kind) {
+      var t = job.threads[kind];
+      return { kind: kind, id: t.id, state: t.state, url: t.threadUrl,
+        submitClickedAt: t.submitClickedAt, finalState: t.finalState, update: t.update && {
+          purpose: t.update.purpose, status: t.update.status, attempts: t.update.attempts, error: t.update.error } };
+    })),
     ''].concat(jobLogText(job)).join('\n');
 }
 
@@ -188,13 +194,16 @@ function jobButton(label, onClick) {
   return b;
 }
 
-function sendJob(type, id) {
-  chrome.runtime.sendMessage({ type: type, jobId: id }, function () { void chrome.runtime.lastError; });
+function sendJob(type, id, kind, allowResubmit) {
+  chrome.runtime.sendMessage({ type: type, jobId: id, kind: kind, allowResubmit: allowResubmit }, function (res) {
+    var error = chrome.runtime.lastError;
+    if (error || (res && res.ok === false)) alert((res && res.error) || (error && error.message) || 'Could not update the schedule');
+  });
 }
 
 function jobSummary(job) {
   var seen = job.lastSeen || {};
-  if (job.state === 'watching') {
+  if (job.active) {
     return 'last checked ' + (when(job.lastCheckAt) || 'not yet') +
       (seen.phase ? ' (' + seen.phase + (seen.countdown ? ', "' + seen.countdown + '"' : '') + ')' : '') +
       ', next ' + when(job.nextCheckAt);
@@ -203,6 +212,50 @@ function jobSummary(job) {
   return 'since ' + when(job.updatedAt);
 }
 
+function renderThread(job, thread, box) {
+  var name = thread.kind === 'live' ? 'LMT' : 'PMT';
+  var line = document.createElement('div');
+  line.className = 'meta thread';
+  var summary = name + ': ' + (thread.state === 'watching' ? 'pending' : thread.state);
+  if (thread.kind === 'live' && thread.state === 'posted') {
+    summary += thread.finalState === 'done' ? ' · finalized' : job.liveUpdatesStopped ? ' · updates stopped'
+      : job.overSince ? ' · PMT handoff pending' : ' · monitoring maps';
+  }
+  if (thread.update) summary += ' · ' + thread.update.purpose + ' updates: ' + thread.update.status;
+  line.textContent = summary;
+  box.appendChild(line);
+  if (thread.threadUrl) {
+    var link = document.createElement('a');
+    link.href = thread.threadUrl; link.target = '_blank'; link.textContent = 'Open ' + name;
+    line.appendChild(document.createTextNode(' · ')); line.appendChild(link);
+  }
+  var error = thread.error || (thread.update && thread.update.error);
+  if (error) box.appendChild(Object.assign(document.createElement('div'), { className: 'err', textContent: name + ': ' + error }));
+  if (thread.notes && thread.notes.length) box.appendChild(Object.assign(document.createElement('div'), {
+    className: 'meta', textContent: name + ' missing: ' + thread.notes.join('; ')
+  }));
+  if (thread.state === 'attention' || thread.state === 'submitting') {
+    box.appendChild(jobButton('Go to ' + name + ' submit tab', function () { sendJob('scheduleFocus', job.id, thread.kind); }));
+  }
+  if (['attention', 'failed', 'cancelled'].indexOf(thread.state) >= 0) {
+    box.appendChild(jobButton('Retry ' + name, function () {
+      var allowed = !thread.submitClickedAt || confirm(
+        'Submit was already clicked for this ' + name + '. Check r/' + job.subreddit +
+        ' first. Retrying may post it twice. Authorize another submission?');
+      if (allowed) sendJob('scheduleRetry', job.id, thread.kind, !!thread.submitClickedAt);
+    }));
+  }
+  if (thread.state === 'posted' && thread.update && thread.update.status === 'stopped' && !job.cancelled) {
+    box.appendChild(jobButton(thread.kind === 'live' && job.liveUpdatesStopped ? 'Resume LMT editing' :
+      thread.finalState === 'stopped' ? 'Retry final LMT edit' : 'Retry ' + name + ' updates',
+    function () { sendJob('scheduleRetryUpdate', job.id, thread.kind); }));
+  }
+  if (thread.body && thread.state !== 'posted') {
+    var title = jobButton('Copy ' + name + ' title', function () { copyWithFeedback(title, thread.title || ''); });
+    var body = jobButton('Copy ' + name + ' body', function () { copyWithFeedback(body, thread.body); });
+    box.appendChild(title); box.appendChild(body);
+  }
+}
 function renderJobs() {
   chrome.storage.local.get(['pmt:jobs'], function (v) {
     var jobs = (v && v['pmt:jobs']) || {};
@@ -211,96 +264,40 @@ function renderJobs() {
     var host = document.getElementById('jobs');
     host.textContent = '';
     if (!list.length) {
-      host.appendChild(Object.assign(document.createElement('p'),
-        { className: 'hint', textContent: 'Nothing scheduled.' }));
+      host.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: 'Nothing scheduled.' }));
       return;
     }
     list.forEach(function (job) {
-      var box = document.createElement('div');
-      box.className = 'run job';
-
-      var h = document.createElement('h3');
-      var pill = document.createElement('span');
-      pill.className = 'state ' + job.state;
-      pill.textContent = JOB_STATES[job.state] || job.state;
+      if (!job.threads) return; // The background migrates earlier records on startup.
+      var box = document.createElement('div'); box.className = 'run job';
+      var h = document.createElement('h3'), pill = document.createElement('span');
+      pill.className = 'state ' + job.state; pill.textContent = JOB_STATES[job.state] || job.state;
       h.appendChild(pill);
       var match = document.createElement('a');
-      match.href = job.matchUrl;
-      match.target = '_blank';
-      match.textContent = job.label || job.matchUrl;
-      h.appendChild(match);
-      box.appendChild(h);
-
-      var meta = document.createElement('div');
-      meta.className = 'meta';
-      meta.textContent = (job.kind === 'live' ? 'LIVE discussion' : 'Post-match') +
-        ' · scheduled ' + when(job.createdAt) + ' - ' + jobSummary(job) +
-        (job.kind === 'live' && job.state === 'posted' ?
-          ' · map updates: ' + (job.map3EditStatus || 'off') : '');
-      box.appendChild(meta);
-
-      if (job.threadUrl) {
-        var link = document.createElement('div');
-        link.className = 'meta';
-        var a = document.createElement('a');
-        a.href = job.threadUrl;
-        a.target = '_blank';
-        a.textContent = job.threadUrl;
-        link.appendChild(a);
-        box.appendChild(link);
-      }
-      if (job.error && job.state !== 'posted') {
-        box.appendChild(Object.assign(document.createElement('div'), { className: 'err', textContent: job.error }));
-      }
-      if (job.notes && job.notes.length) {
-        box.appendChild(Object.assign(document.createElement('div'),
-          { className: 'meta', textContent: 'Missing from the thread: ' + job.notes.join('; ') }));
-      }
-
-      var active = job.state === 'watching' || job.state === 'generating' || job.state === 'submitting';
-      if (active) box.appendChild(jobButton('Cancel', function () { sendJob('scheduleCancel', job.id); }));
-      if (job.kind === 'live' && job.state === 'posted' &&
-          ['waiting', 'building', 'editing'].indexOf(job.map3EditStatus) >= 0) {
+      match.href = job.matchUrl; match.target = '_blank'; match.textContent = job.label || job.matchUrl;
+      h.appendChild(match); box.appendChild(h);
+      box.appendChild(Object.assign(document.createElement('div'), { className: 'meta',
+        textContent: (job.mode === 'live' ? 'LMT + PMT' : 'PMT only') + ' · r/' + job.subreddit +
+          ' · scheduled ' + when(job.createdAt) + ' · ' + jobSummary(job) }));
+      ['live', 'post'].forEach(function (kind) { if (job.threads[kind]) renderThread(job, job.threads[kind], box); });
+      if (job.active) box.appendChild(jobButton('Cancel entire workflow', function () {
+        if (confirm('Cancel all remaining work for this match, including the pending PMT?')) sendJob('scheduleCancel', job.id);
+      }));
+      if (job.threads.live && job.threads.live.state === 'posted' && !job.liveUpdatesStopped &&
+          job.threads.live.finalState !== 'done' && !job.cancelled) {
         box.appendChild(jobButton('Stop live updates', function () {
-          if (confirm('Stop editing this live discussion after completed maps?')) {
-            sendJob('scheduleStopUpdates', job.id);
-          }
+          if (confirm('Stop LMT editing? The scheduled PMT will remain active.')) sendJob('scheduleStopUpdates', job.id);
         }));
       }
-      if (job.state === 'attention' || job.state === 'submitting') {
-        box.appendChild(jobButton('Go to the submit tab', function () { sendJob('scheduleFocus', job.id); }));
-      }
-      if (job.state === 'attention' || job.state === 'failed' || job.state === 'cancelled') {
-        box.appendChild(jobButton('Retry', function () {
-          // clearing the spent go-ahead is what would let a second copy go up
-          if (job.submitClickedAt && !confirm(
-            'Submit was already clicked for this thread. Check r/' + (job.subreddit || 'GlobalOffensive') +
-            ' first - retrying may post it twice. Retry anyway?')) return;
-          sendJob('scheduleRetry', job.id);
-        }));
-      }
-      if (!active) box.appendChild(jobButton('Remove', function () { sendJob('scheduleRemove', job.id); }));
-      // for finishing a stuck one by hand
-      if (job.body && job.state !== 'posted') {
-        var copyTitle = jobButton('Copy title', function () { copyWithFeedback(copyTitle, job.title || ''); });
-        var copyBody = jobButton('Copy body', function () { copyWithFeedback(copyBody, job.body); });
-        box.appendChild(copyTitle);
-        box.appendChild(copyBody);
-      }
+      if (!job.active) box.appendChild(jobButton('Remove', function () { sendJob('scheduleRemove', job.id); }));
       var copyLog = jobButton('Copy log', function () { copyWithFeedback(copyLog, jobReport(job)); });
       box.appendChild(copyLog);
-
-      // the list redraws on every check, so remember which logs were open
-      var pre = document.createElement('pre');
-      pre.textContent = jobLogText(job);
+      var pre = document.createElement('pre'); pre.textContent = jobLogText(job);
       if (openLogs[job.id]) pre.classList.add('open');
       var show = jobButton(openLogs[job.id] ? 'Hide log' : 'Log', function () {
-        openLogs[job.id] = pre.classList.toggle('open');
-        show.textContent = openLogs[job.id] ? 'Hide log' : 'Log';
+        openLogs[job.id] = pre.classList.toggle('open'); show.textContent = openLogs[job.id] ? 'Hide log' : 'Log';
       });
-      box.appendChild(show);
-      box.appendChild(pre);
-      host.appendChild(box);
+      box.appendChild(show); box.appendChild(pre); host.appendChild(box);
     });
   });
 }
