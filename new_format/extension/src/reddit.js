@@ -81,6 +81,7 @@
       }
       var report = function (ok, error, permanent) {
         return ask({ type: 'scheduledMap3EditResult', jobId: job.jobId,
+                     editToken: job.editToken,
                      ok: ok, error: error || '', permanent: !!permanent });
       };
       var normText = function (s) {return String(s || '').replace(/\r\n/g, '\n').replace(/[ \t\\\n]+$/, '');};

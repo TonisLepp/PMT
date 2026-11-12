@@ -323,8 +323,13 @@ function buildLiveTitle(d) {
     (stage ? ' - ' + stage : '') + ' / Live Match Discussion';
 }
 
-function liveHeaderBlock(d, ctx) {
+function liveHeaderBlock(d, ctx, matchOver) {
   var series = seriesFromMaps(d.maps);
+  if (matchOver) {
+    var left = parseInt(d.teams[0].score, 10), right = parseInt(d.teams[1].score, 10);
+    // Missing team scores scrape as 0-0; keep any result from finished maps.
+    if (left >= 0 && right >= 0 && left + right > 0) series = [left, right];
+  }
   var scoreBit = (series[0] + series[1] > 0)
     ? series[0] + '-' + series[1]
     : 'vs';
@@ -355,10 +360,12 @@ function liveHeaderBlock(d, ctx) {
   return lines.join('\n');
 }
 
-function liveStatusBlock(d) {
+function liveStatusBlock(d, extra) {
+  extra = extra || {};
   var lines = [];
   if (d.format && d.format.bestOf) lines.push('**' + d.format.bestOf + '**  ');
-  if (d.live && d.live.isLive) lines.push('**LIVE**  ');
+  if (extra.matchOver) lines.push('**MATCH CONCLUDED**  ');
+  else if (d.live && d.live.isLive) lines.push('**LIVE**  ');
   else if (d.live && d.live.unix) {
     var when = formatUtc(d.live.unix);
     if (when) lines.push('**Starts:** ' + when + '  ');
@@ -420,9 +427,19 @@ function buildLiveBody(d, extra) {
   var ctx = makeCtx(d, extra);
 
   var parts = [];
-  parts.push(liveHeaderBlock(d, ctx) + '\n&nbsp;\n');
+  if (extra.matchOver && extra.postMatchUrl) {
+    var postUrl = new URL(extra.postMatchUrl);
+    if (postUrl.protocol !== 'https:' || !/^(old|www)\.reddit\.com$/.test(postUrl.hostname) ||
+        !/^\/r\/[^/]+\/comments\/[a-z0-9]+(?:\/|$)/i.test(postUrl.pathname)) {
+      throw new Error('Invalid post-match discussion link');
+    }
+    postUrl.search = ''; postUrl.hash = '';
+    parts.push('## This match has concluded\n\nContinue the discussion in the ' +
+      '[post-match thread](' + postUrl.href.replace(/\(/g, '%28').replace(/\)/g, '%29') + ').\n\n---\n');
+  }
+  parts.push(liveHeaderBlock(d, ctx, extra.matchOver) + '\n&nbsp;\n');
 
-  var status = liveStatusBlock(d);
+  var status = liveStatusBlock(d, extra);
   if (status) parts.push(status + '\n\n&nbsp;\n');
   parts.push('-----');
 
@@ -435,7 +452,7 @@ function buildLiveBody(d, extra) {
   parts.push(liveVetoBlock(d, ctx) + '\n\n&nbsp;\n\n\n---\n');
 
   if (d.statsAll) {
-    parts.push('###Match Stats So Far\n\n' + statsTable(d.statsAll, d, ctx) +
+    parts.push((extra.matchOver ? '###Match Stats\n\n' : '###Match Stats So Far\n\n') + statsTable(d.statsAll, d, ctx) +
       '\n\n###[HLTV Match Page](' + d.matchUrl + ')\n\n\n&nbsp;\n\n---\n\n&nbsp;\n');
   }
 
